@@ -7,7 +7,6 @@ import datetime
 import pytz
 import threading
 import sys
-from urllib import unquote_plus
 
 app = Flask(__name__)
 FLASK_PORT = 9001
@@ -46,12 +45,55 @@ def get_all_regions():
 
     return ret
 
+def region_to_name(region):
+    region_to_name_mapping = {
+        "eu-north-1":"Europe (Stockholm)",
+        "ap-south-1":"Asia Pacific (Mumbai)",
+        "eu-west-3":"Europe (Paris)",
+        "eu-west-2":"Europe (London)",
+        "eu-west-1":"Europe (Ireland)",
+        "ap-northeast-2":"Asia Pacific (Seoul)",
+        "me-south-1":"Middle East (Bahrain)",
+        "ap-northeast-1":"Asia Pacific (Tokyo)",
+        "sa-east-1":"South America (Sao Paulo)",
+        "ca-central-1":"Canada (Central)",
+        "ap-southeast-1":"Asia Pacific (Singapore)",
+        "ap-southeast-2":"Asia Pacific (Sydney)",
+        "eu-central-1":"Europe (Frankfurt)",
+        "us-east-1":"US East (N. Virginia)",
+        "us-east-2":"US East (Ohio)",
+        "us-west-1":"US West (N. California)",
+        "us-west-2":"US West (Oregon)",
+    }
+    if region in region_to_name_mapping.keys():
+        return region_to_name_mapping[region]
+    else:
+        return None
+
+def table_heading_mapping(heading):
+    table_heading_mapping = {
+        "instance_id": "Instance ID", 
+        "instance_name": "Instance Name",
+        "instance_type": "Instance Size",
+        "instance_state": "Instance State",
+        "instance_uptime": "Instance Uptime",
+        "instance_vpc_id": "VPC ID",
+        "instance_az": "AZ",
+    }
+    if heading in table_heading_mapping.keys():
+        return table_heading_mapping[heading]
+    else:
+        return None
+
 @app.route('/server/status')
 def status_check():
     return "The AWS Query Server is UP and RUNNING"
 
 def convert_to_table(heading, values):
-    table = PrettyTable(heading)
+    new_heading = []
+    for head in heading:
+        new_heading.append(table_heading_mapping(head))
+    table = PrettyTable(new_heading)
     table.format = True
     for row in values:
         table_row = []
@@ -105,21 +147,33 @@ def get_running_instances_from_region(region, uptime=0, state='running'):
 
    return (data)
 
-@app.route("/ec2/<state>/<region>/<uptime>")
+@app.route("/ec2/<state>/<region>/<uptime>", methods = ['GET'])
 def wrapped_ec2(state, region, uptime):
-    return get_ec2({'state':state, 'region':region, 'uptime':uptime})
-@app.route("/ec2")
+    input_data = {'state':state, 'region':region, 'uptime':uptime}
+    return get_ec2(input_data)
+@app.route("/ec2", methods = ['POST', 'GET'])
 def get_ec2(input_data={}):
 
-    if input_data:
-        region = unquote_plus(input_data['region'])
-        state = unquote_plus(input_data['state'])
-        uptime = unquote_plus(input_data['uptime'])
-    else:
-        # Parsing the Query String
-        region = unquote_plus(request.args.get('region', "all"))
-        state = unquote_plus(request.args.get('state', 'running'))
-        uptime = int(unquote_plus(request.args.get('uptime', '0')))
+    if request.method == 'POST':
+        region = request.form.get('region')
+        state = request.form.get('state')
+        uptime = request.form.get('uptime')
+        if uptime == "":
+            uptime = 0
+        else:
+            uptime = int(uptime)
+    else: 
+        if input_data:
+            print ("Got Input Data")
+            region = input_data['region']
+            state = input_data['state']
+            uptime = input_data['uptime']
+            print (region, state, uptime)
+        else:
+            # Parsing the Query String
+            region = request.args.get('region', "all")
+            state = request.args.get('state', 'running')
+            uptime = int(request.args.get('uptime', '0'))
 
     if region == "all":
         all_regions = get_all_regions()
@@ -128,7 +182,8 @@ def get_ec2(input_data={}):
         all_regions.append(region)
 
     ret_str = ""
-    ret_str = ret_str + style_string()
+    ret_str = ret_str + head_string() + style_string()
+    ret_str = ret_str + '<div class="container">'
     for reg in all_regions:
         #thread_data = get_running_instances_from_region(reg, uptime, state)
         #data = thread_data.result_queue.get()
@@ -138,11 +193,22 @@ def get_ec2(input_data={}):
             # Printing to Table
             table = convert_to_table(["instance_id", "instance_name", "instance_type", "instance_state", "instance_uptime", "instance_vpc_id", "instance_az"], data)
             # Print to HTML
-            ret_str = ret_str + "<h2> Region: "+reg+" </h2>"
-            ret_str = ret_str + table.get_html_string(attributes={"id":"aws", "class":"aws", "name":"aws"})
-        else:
-            ret_str = ret_str + "<h2> Region: "+reg+" </h2><h4> No Instances in this Region </h4>"
 
+            ret_str = ret_str + '''
+            <div class="panel panel-default">
+            <div class = "panel-heading text-center"><h3 class = "panel-title">Region: %s</h3></div>
+            <div class="panel-body">%s</div></div></div>''' % (region_to_name(reg), table.get_html_string(attributes={"id":"aws", "class":"aws", "name":"aws"}))
+
+            #ret_str = ret_str + "<h2> Region: "+region_to_name(reg)+" </h2>"
+            #ret_str = ret_str + table.get_html_string(attributes={"id":"aws", "class":"aws", "name":"aws"})
+        else:
+            ret_str = ret_str + '''
+            <div class="panel panel-default">
+            <div class = "panel-heading text-center"><h3 class = "panel-title">Region: %s</h3></div>
+            <div class="panel-body text-center">%s</div></div></div>''' % (region_to_name(reg), "<h4> No Instances in this Region </h4>")
+            #ret_str = ret_str + "<h2> Region: "+region_to_name(reg)+" </h2><h4> No Instances in this Region </h4>"
+
+    ret_str = ret_str + '</div></body></html>'
     return ret_str
 
 
@@ -212,24 +278,72 @@ def jumbotron():
 def urls():
     ret_str = ""
     ret_str = '''
-<div class="container">
+    <div class="container">
+    <div class="row">
     <div class="col-sm-6">
         <div class="panel panel-default">
-        <div class = "panel-heading"><h3 class = "panel-title">Available Reports</h3></div>
+        <div class = "panel-heading text-center"><h3 class = "panel-title">Pre Built Reports</h3></div>
         <div class="panel-body">
-<a href=%s>Instances Running in ap-south-1</a>
-<br>
-<a href=%s>Instances Running in us-east-1</a>
-<br>
-<a href=%s>Instances Running for last 7 days in ALL REGIONS</a>
-<br>
-<a href=%s>Stopped Instances in ap-south-1</a>
-<br>
-</div></div></div></div></div>
-''' % (url_for('get_ec2', state='running', region='ap-south-1'),
+        <a class="btn btn-light" href="%s" role="button">Instances Running in Asia Pacific (Mumbai)</a>
+        <br>
+        <a class="btn btn-light" href="%s" role="button">Instances Running in US East (N. Virginia)</a>
+        <br>
+        <a class="btn btn-light" href="%s" role="button">Instances Running for last 7 days in ALL REGIONS</a>
+        <br>
+        <a class="btn btn-light" href="%s" role="button">Stopped Instances in Asia Pacific (Mumbai)</a>
+        </div></div></div>
+    <div class="col-sm-6">
+        <div class="panel panel-default">
+        <div class = "panel-heading text-center"><h3 class = "panel-title">Custom Report</h3></div>
+        <div class="panel-body">
+        <form action="%s" method="POST">
+    <div class="form-group>
+      <label for="state">EC2 Instance State:</label>
+      <select class="form-control" id="state" name="state">
+        <option value="running">Running</option>
+        <option value="stopped">Stopped</option>
+      </select>
+    </div>
+    <div class="form-group>
+      <label for="region">EC2 Instance Region:</label>
+      <select class="form-control" id="region" name="region">
+        <option value="all">All Regions</option>
+        <option value="eu-north-1">Europe (Stockholm)</option>
+        <option value="ap-south-1">Asia Pacific (Mumbai)</option>
+        <option value="eu-west-3">Europe (Paris)</option>
+        <option value="eu-west-2">Europe (London)</option>
+        <option value="eu-west-1">Europe (Ireland)</option>
+        <option value="ap-northeast-2">Asia Pacific (Seoul)</option>
+        <option value="me-south-1">Middle East (Bahrain)</option>
+        <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+        <option value="sa-east-1">South America (Sao Paulo)</option>
+        <option value="ca-central-1">Canada (Central)</option>
+        <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+        <option value="ap-southeast-2">Asia Pacific (Sydney)</option>
+        <option value="eu-central-1">Europe (Frankfurt)</option>
+        <option value="us-east-1">US East (N. Virginia)</option>
+        <option value="us-east-2">US East (Ohio)</option>
+        <option value="us-west-1">US West (N. California)</option>
+        <option value="us-west-2">US West (Oregon)</option>
+      </select>
+    </div>
+    <div class="form-group>
+      <label for="uptime">EC2 Instance UP Since (days):</label>
+      <input type="text" class="form-control floatNumber" id="uptime", name="uptime">
+    </div>
+    <br>
+    <div class="text-center">
+    <button type="submit" class="btn btn-primary">Run Query</button>
+    </div>
+  </form>
+        </div></div></div>
+    </div></div>
+</div></div>
+''' % (url_for('wrapped_ec2', state='running', region='ap-south-1', uptime='0'),
        url_for('get_ec2', state='running', region='us-east-1'),
-       url_for('get_ec2', state='running', region='ap-south-1', uptime='7'),
+       url_for('wrapped_ec2', state='running', region='all', uptime='7'),
        url_for('get_ec2', state='stopped', region='ap-south-1'),
+       url_for('get_ec2'),
        )
     return ret_str
 
