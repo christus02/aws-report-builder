@@ -5,9 +5,37 @@ from prettytable import PrettyTable
 from flask import Flask, request, send_file, redirect, url_for, jsonify
 import datetime
 import pytz
+import threading
+import sys
+from urllib import unquote_plus
 
 app = Flask(__name__)
 FLASK_PORT = 9001
+
+# Decorator for threading
+#def threaded(f, daemon=False):
+#    import Queue
+#
+#    def wrapped_f(q, *args, **kwargs):
+#        '''this function calls the decorated function and puts the 
+#        result in a queue'''
+#        ret = f(*args, **kwargs)
+#        q.put(ret)
+#
+#    def wrap(*args, **kwargs):
+#        '''this is the function returned from the decorator. It fires off
+#        wrapped_f in a new thread and returns the thread object with
+#        the result queue attached'''
+#
+#        q = Queue.Queue()
+#
+#        t = threading.Thread(target=wrapped_f, args=(q,)+args, kwargs=kwargs)
+#        t.daemon = daemon
+#        t.start()
+#        t.result_queue = q
+#        return t
+#
+#    return wrap
 
 def get_all_regions():
     ec2 = boto3.client('ec2')
@@ -18,37 +46,9 @@ def get_all_regions():
 
     return ret
 
-@app.route('/')
+@app.route('/server/status')
 def status_check():
     return "The AWS Query Server is UP and RUNNING"
-
-@app.route("/ec2/running/<region>", methods = ['GET'])
-@app.route("/ec2/running", methods = ['GET'])
-def print_running_instance_from_region(region='ap-south-1'):
-
-   ret_str = ""
-   data = get_running_instances_from_region(region)
-   if len(data) >= 1:
-       # Printing to Table
-       table = convert_to_table(["instance_id", "instance_name", "instance_type", "instance_state", "instance_uptime", "instance_vpc_id", "instance_az"], data)
-       # Print to HTML
-       ret_str = ret_str + "<h2> Region: "+region+" </h2>"
-       ret_str = ret_str + table.get_html_string()
-   else:
-       ret_str = "<h2> Region: "+region+" </h2><h4> No Instances in Running State in this Region </h4>"
-      
-   return ret_str
-
-@app.route("/ec2/running/all-regions")
-def print_running_instances_from_all_regions():
-
-    ret_str = ""
-    all_regions = get_all_regions()
-    for region in all_regions:
-        region_data = print_running_instance_from_region(region)
-        ret_str = ret_str + region_data
-
-    return ret_str
 
 def convert_to_table(heading, values):
     table = PrettyTable(heading)
@@ -62,13 +62,8 @@ def convert_to_table(heading, values):
     return (table)
         
 
-def get_newly_launched_instances(region):
-   pass
-
-def get_running_instances_for_last_7_days(region):
-   pass
-
-def get_running_instances_from_region(region, uptime=0):
+#@threaded
+def get_running_instances_from_region(region, uptime=0, state='running'):
     # Return Data Structure - List of Dictionaries - [{instance1}, {instance2}]
    data = []
    ec2 = boto3.client('ec2', region_name=region)
@@ -76,7 +71,7 @@ def get_running_instances_from_region(region, uptime=0):
              Filters=[
                  {
                   'Name': 'instance-state-name',
-                  'Values': ['running']
+                  'Values': [state]
                  }
              ]
              )
@@ -110,30 +105,43 @@ def get_running_instances_from_region(region, uptime=0):
 
    return (data)
 
+@app.route("/ec2/<state>/<region>/<uptime>")
+def wrapped_ec2(state, region, uptime):
+    return get_ec2({'state':state, 'region':region, 'uptime':uptime})
 @app.route("/ec2")
-def get_ec2():
-    # Parsing the Query String
-    region = request.args.get('region', "all")
-    state = request.args.get('state', 'running')
-    uptime = int(request.args.get('uptime', '0'))
+def get_ec2(input_data={}):
+
+    if input_data:
+        region = unquote_plus(input_data['region'])
+        state = unquote_plus(input_data['state'])
+        uptime = unquote_plus(input_data['uptime'])
+    else:
+        # Parsing the Query String
+        region = unquote_plus(request.args.get('region', "all"))
+        state = unquote_plus(request.args.get('state', 'running'))
+        uptime = int(unquote_plus(request.args.get('uptime', '0')))
 
     if region == "all":
         all_regions = get_all_regions()
     else: 
-        all_regions = region
+        all_regions = []
+        all_regions.append(region)
 
     ret_str = ""
+    ret_str = ret_str + style_string()
     for reg in all_regions:
-        data = get_running_instances_from_region(reg, uptime)
+        #thread_data = get_running_instances_from_region(reg, uptime, state)
+        #data = thread_data.result_queue.get()
+        data = get_running_instances_from_region(reg, uptime, state)
 
         if len(data) >= 1:
             # Printing to Table
             table = convert_to_table(["instance_id", "instance_name", "instance_type", "instance_state", "instance_uptime", "instance_vpc_id", "instance_az"], data)
             # Print to HTML
             ret_str = ret_str + "<h2> Region: "+reg+" </h2>"
-            ret_str = ret_str + table.get_html_string()
+            ret_str = ret_str + table.get_html_string(attributes={"id":"aws", "class":"aws", "name":"aws"})
         else:
-            ret_str = ret_str + "<h2> Region: "+reg+" </h2><h4> No Instances in Running State in this Region </h4>"
+            ret_str = ret_str + "<h2> Region: "+reg+" </h2><h4> No Instances in this Region </h4>"
 
     return ret_str
 
@@ -148,5 +156,93 @@ def calculate_instance_age(launch_time):
     # Example: 249 days
     return diff.days
 
+def style_string():
+
+    style_string = '''<style>
+#aws {
+  font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+#aws td, #customers th {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+#aws tr:nth-child(even){background-color: #f2f2f2;}
+
+#aws tr:hover {background-color: #ddd;}
+
+#aws th {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  text-align: left;
+  background-color: #4CAF50;
+  color: white;
+}
+</style>'''
+    return style_string
+
+def head_string():
+    head_string = '''
+<html>
+<head>
+  <title>AWS Report Builder</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>
+</head>
+'''
+    return head_string
+
+def jumbotron():
+    jumbotron_string = '''
+<body>
+<div class="jumbotron text-center">
+    <h1>AWS Report Builder</h1>
+    <p>You can query AWS Instances of your account from this portal</p>
+</div>
+<br>
+'''
+    return jumbotron_string
+
+def urls():
+    ret_str = ""
+    ret_str = '''
+<div class="container">
+    <div class="col-sm-6">
+        <div class="panel panel-default">
+        <div class = "panel-heading"><h3 class = "panel-title">Available Reports</h3></div>
+        <div class="panel-body">
+<a href=%s>Instances Running in ap-south-1</a>
+<br>
+<a href=%s>Instances Running in us-east-1</a>
+<br>
+<a href=%s>Instances Running for last 7 days in ALL REGIONS</a>
+<br>
+<a href=%s>Stopped Instances in ap-south-1</a>
+<br>
+</div></div></div></div></div>
+''' % (url_for('get_ec2', state='running', region='ap-south-1'),
+       url_for('get_ec2', state='running', region='us-east-1'),
+       url_for('get_ec2', state='running', region='ap-south-1', uptime='7'),
+       url_for('get_ec2', state='stopped', region='ap-south-1'),
+       )
+    return ret_str
+
+@app.route("/")
+def landing():
+    return head_string() + jumbotron() + urls() + "</body></html>"
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=FLASK_PORT)
+    try: 
+        app.run(host='0.0.0.0', port=FLASK_PORT)
+    except (KeyboardInterrupt, SystemExit):
+        print ("Exiting on Keyboard Interrupt")
+        sys.exit()
+    except:
+        print ("Exiting on exception")
+        sys.exit()
